@@ -1,1 +1,1 @@
-﻿Lab 05 – RBAC & IAM
+﻿Lab 05 - RBAC and IAM

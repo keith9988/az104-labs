@@ -1,1 +1,1 @@
-﻿Lab 03 – Virtual Machines
+﻿Lab 03 - Virtual Machines

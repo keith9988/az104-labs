@@ -1,1 +1,1 @@
-﻿Lab 02 – Networking
+﻿Lab 02 - Networking (VNet, Subnet, NSG)

@@ -1,1 +1,1 @@
-﻿Lab 01 – Resource Groups
+﻿Lab 01 - Resource Groups
