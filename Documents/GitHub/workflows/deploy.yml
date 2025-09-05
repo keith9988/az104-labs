@@ -1,0 +1,91 @@
+name: Build and Deploy to AKS
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "app/**"
+      - "helm/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write    # needed for azure/login (OIDC token)
+  contents: read     # to checkout the repo
+
+env:
+  REGISTRY_NAME: ${{ secrets.ACR_NAME }}   # e.g. aiplatabc123 (no .azurecr.io)
+  AKS_RG:       ${{ secrets.AKS_RG }}      # e.g. Keith-ai-rg
+  AKS_NAME:     ${{ secrets.AKS_NAME }}    # e.g. ai-plat-dev-aks
+  IMAGE_NAME:   ai-service
+
+permissions:
+  contents: read
+  # (id-token permission not required when using creds JSON)
+
+- name: Azure Login (service principal secret)
+  uses: azure/login@v2
+  with:
+    creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Resolve ACR login server
+      id: acr
+      run: echo "LOGIN_SERVER=$(az acr show --name $REGISTRY_NAME --query loginServer -o tsv)" >> "$GITHUB_OUTPUT"
+
+    - name: Compute image tag
+      id: meta
+      shell: bash
+      run: |
+        SHORT_SHA="${GITHUB_SHA::7}"
+        TAG="$(date +%Y%m%d%H%M%S)-$SHORT_SHA"
+        echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
+
+    - name: Build & Push image with ACR Tasks
+      run: |
+        az acr build \
+          --registry "$REGISTRY_NAME" \
+          --image "$IMAGE_NAME:${{ steps.meta.outputs.TAG }}" \
+          --file app/Dockerfile ./app
+
+    - name: Install Helm
+      uses: azure/setup-helm@v4
+
+
+    - name: Get AKS credentials
+      run: |
+        az aks get-credentials -g "$AKS_RG" -n "$AKS_NAME" --overwrite-existing
+        kubectl cluster-info
+
+    - name: Helm upgrade/install
+      run: |
+        helm upgrade --install "$IMAGE_NAME" ./helm/ai-service \
+          --set image.repository="${{ steps.acr.outputs.LOGIN_SERVER }}/$IMAGE_NAME" \
+          --set image.tag="${{ steps.meta.outputs.TAG }}"
+        kubectl rollout status deploy/$IMAGE_NAME
+        kubectl get deploy,svc -l app.kubernetes.io/name=$IMAGE_NAME -o wide
+
+    - name: Render Helm chart to manifests
+      run: |
+        helm template "$IMAGE_NAME" ./helm/ai-service \
+          --set image.repository="${{ steps.acr.outputs.LOGIN_SERVER }}/$IMAGE_NAME" \
+          --set image.tag="${{ steps.meta.outputs.TAG }}" > rendered.yaml
+        test -s rendered.yaml || (echo "rendered.yaml is empty" && exit 1)
+
+    - name: Apply manifests inside AKS (private-safe)
+      run: |
+        az aks command invoke \
+          -g "$AKS_RG" -n "$AKS_NAME" \
+          --file rendered.yaml \
+          --command "kubectl apply -f rendered.yaml"
+
+    - name: Wait for rollout inside AKS
+      run: |
+        az aks command invoke \
+          -g "$AKS_RG" -n "$AKS_NAME" \
+          --command "kubectl rollout status deploy/$IMAGE_NAME --timeout=120s"
+
+    - name: Show status inside AKS
+      run: |
+        az aks command invoke \
+          -g "$AKS_RG" -n "$AKS_NAME" \
+          --command "kubectl get deploy,svc -l app.kubernetes.io/name=$IMAGE_NAME -o wide"
